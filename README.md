@@ -21,11 +21,12 @@ throw. Dual license: AGPL-3.0-or-later OR Slid Phi Labs Commercial.
 ## Terminal
 
 ```sh
-npx @slidphi/spl-acn card                  # server card
-npx @slidphi/spl-acn catalog               # standing SKUs
-npx @slidphi/spl-acn call spl_quote '{"gb":10}'
-SPL_ACN_KEY=spl1.… npx @slidphi/spl-acn call spl_compress '{"data_b64":"eA=="}'
+npx github:ceedot-rock/spl-acn card                  # server card
+npx github:ceedot-rock/spl-acn catalog               # standing SKUs
+npx github:ceedot-rock/spl-acn call spl_quote '{"gb":10}'
+SPL_ACN_KEY=spl1.… npx github:ceedot-rock/spl-acn call spl_compress '{"data_b64":"eA=="}'
 ```
 
 Or install the `spl-acn` binary. Exit codes: 0 ok, 1 call refused,
-2 bad CLI.
+2 bad CLI. Registry install (`npx @slidphi/spl-acn`) lands with the
+first npm publish.
