@@ -134,6 +134,17 @@ export async function ask(client, text) {
       say: [`I found ${items.length || "the"} listing(s) but none matched your words.`, "Name a product (pcc, chamber, rider, warrant, ...) and I will quote it."],
     };
   }
+  if (/compress|decompress|\bzip\b|\bunzip\b/.test(q)) {
+    return {
+      code: 2,
+      heard: "compress-hint",
+      say: [
+        "I compress through spl_compress: base64 in, packed_b64 out. Quote first — the first 1 GB per IP is free.",
+        'Say: "call spl_quote bytes=1861035 product=auto op=compress", then "call spl_compress data_b64=...".',
+        "Files: \"call spl_zip\" with files=[{path,data_b64}]. Restore with spl_decompress / spl_unzip.",
+      ],
+    };
+  }
   return {
     code: 2,
     heard: "unknown",

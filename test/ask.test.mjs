@@ -64,6 +64,15 @@ test("ask call explains payment in words", async () => {
   assert.ok(out.say.join(" ").includes("payment"));
 });
 
+test("ask compression words route to spl_compress with no network", async () => {
+  const fetchFn = stubFetch([]);
+  const out = await ask(client(fetchFn), "compress my logs please");
+  assert.equal(out.code, 2);
+  assert.equal(out.heard, "compress-hint");
+  assert.ok(out.say.join(" ").includes("spl_compress"));
+  assert.equal(fetchFn.calls.length, 0);
+});
+
 test("ask CLI facet prints words plus the code command", async () => {
   const fetchFn = stubFetch([
     { method: "GET", url: MCP_ENDPOINT, status: 200, body: { name: "spl-acn" } },
