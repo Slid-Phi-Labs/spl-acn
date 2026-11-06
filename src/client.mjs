@@ -10,7 +10,7 @@
  * all refuse with a reason, never a half result.
  */
 
-export const MCP_SDK_VERSION = "0.1.0";
+export const MCP_SDK_VERSION = "0.2.0";
 export const MCP_ENDPOINT = "https://www.slidphilabs.com/api/mcp";
 
 function text(v) {

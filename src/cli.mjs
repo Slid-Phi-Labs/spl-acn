@@ -6,6 +6,7 @@
  *   spl-acn card                        # server card
  *   spl-acn catalog                     # standing SKUs (spl_catalog)
  *   spl-acn call <tool> [json-args]     # any MCP tool
+ *   spl-acn ask "..."                   # plain English (smart layer)
  *
  * Flags: --endpoint URL, --api-key KEY (or SPL_ACN_ENDPOINT / SPL_ACN_KEY).
  * JSON on stdout, errors on stderr. Codes: 0 ok, 1 call refused, 2 bad CLI.
@@ -22,6 +23,7 @@ export function usage() {
     "  spl-acn card                    # server card",
     "  spl-acn catalog                 # standing SKUs via spl_catalog",
     "  spl-acn call <tool> [json]      # any MCP tool with JSON args",
+    '  spl-acn ask "..."               # plain English, e.g. ask "how much is chamber"',
     "",
     "Flags: --endpoint URL --api-key KEY  (env: SPL_ACN_ENDPOINT, SPL_ACN_KEY)",
     "Paid tools answer payment_required with accepts — pay, then retry.",
@@ -56,7 +58,7 @@ export async function run(argv = [], opts = {}) {
   }
   const [cmd, ...rest] = positional;
   if (cmd == null) return { code: 2, error: "need a command", text: usage() };
-  if (!["card", "catalog", "call"].includes(cmd)) {
+  if (!["card", "catalog", "call", "ask"].includes(cmd)) {
     return { code: 2, error: "unknown command: " + cmd, text: usage() };
   }
   const client = createMcpClient({
@@ -72,6 +74,7 @@ export async function run(argv = [], opts = {}) {
     const r = await client.callTool("spl_catalog", {});
     return r.ok ? { code: 0, json: r } : { code: 1, json: r };
   }
+  if (cmd === "ask") return runAsk(client, rest);
   const [tool, rawArgs] = rest;
   if (!tool) return { code: 2, error: "need a tool name" };
   let parsed = {};
@@ -84,6 +87,15 @@ export async function run(argv = [], opts = {}) {
   }
   const r = await client.callTool(tool, parsed);
   return r.ok ? { code: 0, json: r } : { code: 1, json: r };
+}
+
+async function runAsk(client, rest) {
+  const { ask } = await import("./ask.mjs");
+  const text = rest.join(" ");
+  const out = await ask(client, text);
+  const lines = [...(out.say || [])];
+  if (out.equivalent) lines.push("code: " + out.equivalent);
+  return { code: out.code, text: lines.join("\n"), ...(out.json === undefined ? {} : { json: out.json }) };
 }
 
 const isMain =
