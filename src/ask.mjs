@@ -8,9 +8,14 @@
  * every smart answer teaches the code form. Pure except through the client.
  */
 
+import { demoScript } from "./demo.mjs";
+import { catalogItems, itemPrice, matchItems } from "./catalog.mjs";
+
 function words(s) {
   return String(s || "").toLowerCase();
 }
+
+const UNIT_MULT = { b: 1, byte: 1, bytes: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12 };
 
 function parseArgs(raw) {
   const t = String(raw || "").trim();
@@ -32,16 +37,8 @@ function parseArgs(raw) {
 }
 
 function pickSku(text, catalog) {
-  const items = [];
-  const walk = (v) => {
-    if (Array.isArray(v)) return v.forEach(walk);
-    if (v && typeof v === "object") {
-      if (typeof v.sku === "string" || typeof v.name === "string") items.push(v);
-      Object.values(v).forEach(walk);
-    }
-  };
-  walk(catalog);
-  const hits = items.filter((it) =>
+  const items = catalogItems(catalog);
+  const hits = matchItems(items, "").filter((it) =>
     [it.sku, it.name, it.id].some(
       (f) => typeof f === "string" && f.length > 2 && text.includes(f.toLowerCase()),
     ),
@@ -67,8 +64,9 @@ export async function ask(client, text) {
       code: 0,
       heard: "capabilities",
       say: [
-        "I can introduce the server (card), quote prices (catalog), or run any tool (call).",
-        'Try: "who are you", "how much is rider", or "call <tool> with <args>".',
+        "I can introduce the server (card), quote prices (catalog, quote, prices), or run any tool (call, batch).",
+        'Try: "who are you", "how much is rider", "how much to compress 2 gb", or "call <tool> with <args>".',
+        'Warrants cap spend ("what is a warrant"), receipts verify runs ("check a receipt"), demo needs no key ("show me a demo").',
         "Every answer also shows the code command it ran, so you can skip me next time.",
       ],
     };
@@ -102,6 +100,35 @@ export async function ask(client, text) {
     }
     return { code: 1, heard: "call", json: r, equivalent, say: [`${tool} refused (${r.reason || "unknown"}${r.message ? ": " + r.message : ""}).`, "Fix the input and ask again."] };
   }
+  const qm = q.match(/(\d+(?:\.\d+)?)\s*(tb|gb|mb|kb|bytes?|byte|b)\b/);
+  if (
+    qm &&
+    /\bprice\b|\bcost\b|how much|\bquote\b|compress|store|depot|run|fetch|chamber|rider|\bworth\b/.test(q)
+  ) {
+    const unit = qm[2].toLowerCase();
+    const bytes = Math.round(parseFloat(qm[1]) * (UNIT_MULT[unit] || 1));
+    const pm = q.match(/\b(compress|chamber|rider|warrant|depot|fetch|pcc)\b/);
+    const qargs = { bytes, ...(pm ? { product: pm[1] } : {}) };
+    const equivalent = `spl-acn quote bytes=${bytes}${pm ? ` product=${pm[1]}` : ""}`;
+    const r = await client.callTool("spl_quote", qargs);
+    if (!r.ok) {
+      if (r.reason === "payment_required") {
+        return {
+          code: 1, heard: "quote", json: r, equivalent,
+          say: ["That quote itself needs payment. It accepts:", JSON.stringify(r.accepts || []), "Pay that, then run the command below again unchanged."],
+        };
+      }
+      return { code: 1, heard: "quote", json: r, equivalent, say: [`Could not quote that (${r.reason || "unknown"}).`] };
+    }
+    const total = r.result && typeof r.result === "object"
+      ? (r.result.usd ?? r.result.total ?? r.result.price) : undefined;
+    return {
+      code: 0, heard: "quote", json: r, equivalent,
+      say: [total !== undefined && total !== null
+        ? `About $${total} for ${bytes} bytes${pm ? ` (${pm[1]})` : ""}.`
+        : `Quoted ${bytes} bytes — full result below.`],
+    };
+  }
   if (/\bprice\b|\bcost\b|how much|\bplan\b|\bsku\b|\bcatalog\b|\bquote\b|\bworth\b/.test(q)) {
     const r = await client.callTool("spl_catalog", {});
     if (!r.ok) {
@@ -116,11 +143,11 @@ export async function ask(client, text) {
     const { items, hits } = pickSku(q, r.result);
     if (hits.length === 1) {
       const h = hits[0];
-      const price = h.usd ?? h.usd_per_gb ?? h.usd_per_check ?? h.usd_per_fetch ?? h.usd_per_hour ?? "?";
+      const p = itemPrice(h);
       return {
         code: 0, heard: "price", json: { ok: true, result: h },
         equivalent: "spl-acn catalog",
-        say: [`${h.name || h.sku || h.id}: ${price === "?" ? "see catalog" : "$" + price}${h.sku ? ` (sku ${h.sku})` : ""}.`],
+        say: [`${h.name || h.sku || h.id}: ${p ? p.label : "see catalog"}${h.sku ? ` (sku ${h.sku})` : ""}.`],
       };
     }
     if (hits.length > 1) {
@@ -145,11 +172,55 @@ export async function ask(client, text) {
       ],
     };
   }
+  if (/\bwarrant\b|spend.{0,10}cap|cap.{0,10}(spend|usd)/.test(q)) {
+    return {
+      code: 2,
+      heard: "warrant-hint",
+      equivalent: "spl-acn warrant issue cap-usd=5 tool=spl_compress",
+      say: [
+        "Warrants cap what one tool may spend: issue one, hand it to the run, verify it after.",
+        "Code: spl-acn warrant issue cap-usd=5 tool=spl_compress — then spl-acn warrant verify <id>.",
+      ],
+    };
+  }
+  if (/\breceipt\b|\bproof\b|signed|verify.*(run|output|result)/.test(q)) {
+    return {
+      code: 2,
+      heard: "receipt-hint",
+      equivalent: "spl-acn receipt check <file>",
+      say: [
+        "I verify run receipts offline: every step should carry stage, ok, tool, toolVersion, plus sha256, size, or tx.",
+        "Code: spl-acn receipt check <file-or-json> — refuses closed on anything malformed.",
+      ],
+    };
+  }
+  if (/\bbatch\b|staged run|many tools|plan file/.test(q)) {
+    return {
+      code: 2,
+      heard: "batch-hint",
+      equivalent: "spl-acn batch plan.json",
+      say: [
+        "Batch runs a plan file of staged calls in order and stops closed at the first refusal — later steps never run.",
+        'Code: spl-acn batch plan.json with {"steps":[{"tool":"spl_quote","args":{"gb":10}}]}.',
+      ],
+    };
+  }
+  if (/\bdemo\b|try it|offline|no network|without (a key|network)/.test(q)) {
+    const d = demoScript();
+    return {
+      code: 0,
+      heard: "demo",
+      equivalent: "spl-acn demo",
+      json: d.json,
+      say: d.say,
+    };
+  }
   return {
     code: 2,
     heard: "unknown",
     say: [
-      `I did not get that. I understand: "who are you", "how much is <product>", and "call <tool> <args>".`,
+      `I did not get that. I understand: "who are you", "how much is <product>", "how much to <verb> <size>", and "call <tool> <args>".`,
+      'Also: "what is a warrant", "check a receipt", "batch a plan", "show me a demo".',
       'Example: "call spl_quote {\\"gb\\":10}" or "call spl_quote gb=10".',
     ],
   };

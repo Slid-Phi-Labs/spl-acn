@@ -8,10 +8,16 @@
  * fetchFn: no default network beyond the call itself, no disk.
  * Fail-closed throughout — bad input, tool errors, and transport faults
  * all refuse with a reason, never a half result.
+ *
+ * Resilience (opt-in): timeoutMs aborts slow calls as timed_out, and
+ * maxRetries replays transport faults where NO response arrived
+ * (network_failed, timed_out). A call the server already answered is
+ * never replayed — replaying a paid tool could charge twice.
  */
 
-export const MCP_SDK_VERSION = "0.2.0";
+export const MCP_SDK_VERSION = "0.3.0";
 export const MCP_ENDPOINT = "https://www.slidphilabs.com/api/mcp";
+export const DEFAULT_TIMEOUT_MS = 30000;
 
 function text(v) {
   return v == null ? "" : String(v);
@@ -20,7 +26,9 @@ function text(v) {
 /**
  * Create a client. endpoint defaults to the hosted card; apiKey is the
  * spl1.* claim token for paid seats (omit it for free tools); fetchFn
- * defaults to the global fetch and is stubbed in tests.
+ * defaults to the global fetch and is stubbed in tests. timeoutMs caps
+ * one attempt (0 disables, default 30s); maxRetries replays only
+ * no-response transport faults (default 0, fail fast).
  */
 export function createMcpClient(opts = {}) {
   const endpoint =
@@ -32,21 +40,49 @@ export function createMcpClient(opts = {}) {
       : typeof fetch === "function"
         ? fetch.bind(globalThis)
         : null;
+  const timeoutMs =
+    typeof opts.timeoutMs === "number" && Number.isFinite(opts.timeoutMs) && opts.timeoutMs >= 0
+      ? opts.timeoutMs
+      : DEFAULT_TIMEOUT_MS;
+  const maxRetries =
+    Number.isInteger(opts.maxRetries) && opts.maxRetries > 0 ? opts.maxRetries : 0;
 
-  async function send({ method = "GET", body } = {}) {
-    if (!fetchFn) return { ok: false, reason: "no_fetch" };
+  async function once({ method = "GET", body } = {}) {
+    if (!fetchFn) return { ok: false, reason: "no_fetch", retryable: true };
+    const init = {
+      method,
+      headers: {
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(apiKey ? { authorization: "Bearer " + apiKey } : {}),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    };
     let res;
     try {
-      res = await fetchFn(endpoint, {
-        method,
-        headers: {
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-          ...(apiKey ? { authorization: "Bearer " + apiKey } : {}),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch {
-      return { ok: false, reason: "network_failed" };
+      const pending = fetchFn(endpoint, init);
+      // Swallow late rejections so a won timeout race never surfaces
+      // as an unhandled rejection after we have already refused.
+      if (pending && typeof pending.then === "function") pending.then(() => {}, () => {});
+      if (!timeoutMs) {
+        res = await pending;
+      } else {
+        let timer = null;
+        try {
+          res = await Promise.race([
+            pending,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error("__spl_acn_timeout")), timeoutMs);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+    } catch (err) {
+      if (err && err.message === "__spl_acn_timeout") {
+        return { ok: false, reason: "timed_out", retryable: true };
+      }
+      return { ok: false, reason: "network_failed", retryable: true };
     }
     let data = null;
     try {
@@ -55,6 +91,18 @@ export function createMcpClient(opts = {}) {
       return { ok: false, reason: "bad_response", status: res.status };
     }
     return { ok: true, res, data };
+  }
+
+  async function send(args) {
+    let attempts = 0;
+    for (;;) {
+      attempts += 1;
+      const out = await once(args);
+      if (!out.retryable || attempts > maxRetries) {
+        const { retryable, ...rest } = out;
+        return attempts > 1 ? { ...rest, attempts } : rest;
+      }
+    }
   }
 
   return {

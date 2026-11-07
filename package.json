@@ -1,6 +1,6 @@
 {
   "name": "@slidphi/spl-acn",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "mcpName": "io.github.ceedot-rock/spl-acn",
   "description": "SPL:ACN MCP API SDK — hosted Agent Commerce Network client: server card, tool calls, claim auth, x402-aware errors.",
   "type": "module",
