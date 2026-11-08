@@ -18,6 +18,15 @@ Free tools need no key. Paid seats send the claim token as the bearer;
 402 answers come back as `payment_required` with `accepts`, never a
 throw. Dual license: AGPL-3.0-or-later OR Slid Phi Labs Commercial.
 
+## Name
+
+One network, fixed forms: full name **Agent Commerce Network**, short
+**ACN**, product **SPL:ACN**, slug and command `spl-acn`, npm
+`@slidphi/spl-acn`, repo `ceedot-rock/spl-acn`. The hosted MCP server
+it talks to is a different artifact: registry
+`io.github.ceedot-rock/slid-phi-labs`. This package claims no
+registry name of its own — it is a client.
+
 ## Terminal
 
 ```sh

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+Naming hygiene: dropped `mcpName` (`io.github.ceedot-rock/spl-acn`).
+That registry name belongs to MCP servers; this package is a client,
+and squatting the name risked collision with a future server entry.
+The hosted server stays `io.github.ceedot-rock/slid-phi-labs`. No
+behavior change.
+
 ## 0.3.0
 
 Ten platform options over the 0.2.0 rails:

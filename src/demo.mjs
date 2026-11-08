@@ -9,7 +9,7 @@
 
 export const DEMO_CARD = {
   name: "spl-acn",
-  server: "SPL Agent Commerce Network (demo)",
+  server: "SPL:ACN (demo walkthrough)",
   note: "Canned card. Run `spl-acn card` against the live server for the real one.",
 };
 

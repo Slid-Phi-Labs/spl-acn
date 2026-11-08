@@ -15,7 +15,7 @@
  * never replayed — replaying a paid tool could charge twice.
  */
 
-export const MCP_SDK_VERSION = "0.3.0";
+export const MCP_SDK_VERSION = "0.3.1";
 export const MCP_ENDPOINT = "https://www.slidphilabs.com/api/mcp";
 export const DEFAULT_TIMEOUT_MS = 30000;
 
