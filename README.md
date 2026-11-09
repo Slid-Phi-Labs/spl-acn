@@ -45,11 +45,21 @@ npx github:ceedot-rock/spl-acn ask "how much to compress 2 gb"
 ```
 
 Defaults live in `~/.spl-acn.json` (`endpoint`, `apiKey`,
-`timeoutMs`, `maxRetries`) or `SPL_ACN_CONFIG`; flags beat env beat
-config. `--timeout MS` caps one attempt, `--retries N` replays only
-transport faults where no response arrived — an answered call is never
-replayed, so a paid tool cannot charge twice. `--json` prints machine
-output only.
+`timeoutMs`, `maxRetries`, `localTest`, `idempotencyKey`) or
+`SPL_ACN_CONFIG`; flags beat env beat config. `--timeout MS` caps one
+attempt, `--retries N` replays only transport faults where no response
+arrived (network failures) — an answered call is never replayed, and a
+timed-out paid POST is never replayed either, so a paid tool cannot
+charge twice. Pass `--idempotency-key KEY` (one key per operation) to
+allow safe retry of a timed-out POST; `batch` and `ask` refuse a shared
+key because they place several calls. `--json` prints machine output
+only.
+
+Endpoints: the canonical route is `/api/mcp` on
+`https://www.slidphilabs.com` (a trailing `/mcp` path is normalized to
+`/api/mcp`). Custom endpoints must be https on a known host; use
+`--local-test` (or `SPL_ACN_LOCAL_TEST=1`) for local http development.
+Tool arguments are capped at 1 MiB of JSON per call.
 
 Or install the `spl-acn` binary. Exit codes: 0 ok, 1 call refused,
 2 bad CLI. Registry install (`npx @slidphi/spl-acn`) lands with the
