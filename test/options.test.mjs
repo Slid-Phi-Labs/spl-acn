@@ -172,17 +172,30 @@ test("demo walks through offline with zero fetch calls", async () => {
   assert.equal(r.json.demo, true);
 });
 
-// 8. config file supplies the endpoint
+// 8. config file supplies the endpoint. S2-F2: unknown hosts are refused,
+// so the config endpoint must be a known host.
 test("config file endpoint is used", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spl-acn-"));
   const cfg = path.join(dir, "acn.json");
-  fs.writeFileSync(cfg, JSON.stringify({ endpoint: "https://example.invalid/mcp" }));
+  fs.writeFileSync(cfg, JSON.stringify({ endpoint: "https://www.slidphilabs.com/api/mcp" }));
   const fetchFn = stubFetch([
-    { method: "GET", url: "https://example.invalid/mcp", status: 200, body: { name: "spl-acn" } },
+    { method: "GET", url: "https://www.slidphilabs.com/api/mcp", status: 200, body: { name: "spl-acn" } },
   ]);
   const r = await run(["card"], { fetchFn, env: { SPL_ACN_CONFIG: cfg } });
   assert.equal(r.code, 0);
-  assert.equal(loadConfig({ SPL_ACN_CONFIG: cfg }).endpoint, "https://example.invalid/mcp");
+  assert.equal(loadConfig({ SPL_ACN_CONFIG: cfg }).endpoint, "https://www.slidphilabs.com/api/mcp");
+});
+
+test("config file with an unknown host is refused without dialing", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spl-acn-"));
+  const cfg = path.join(dir, "acn.json");
+  fs.writeFileSync(cfg, JSON.stringify({ endpoint: "https://example.invalid/mcp" }));
+  let dialed = 0;
+  const fetchFn = async () => { dialed += 1; throw new Error("must not dial"); };
+  const r = await run(["card"], { fetchFn, env: { SPL_ACN_CONFIG: cfg } });
+  assert.equal(r.code, 1);
+  assert.equal(r.json.reason, "endpoint_host_mismatch");
+  assert.equal(dialed, 0);
 });
 
 test("missing config file is silently ignored", () => {

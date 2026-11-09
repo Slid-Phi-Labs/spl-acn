@@ -11,13 +11,50 @@
  *
  * Resilience (opt-in): timeoutMs aborts slow calls as timed_out, and
  * maxRetries replays transport faults where NO response arrived
- * (network_failed, timed_out). A call the server already answered is
- * never replayed — replaying a paid tool could charge twice.
+ * (network_failed). A POST is never replayed after a timeout — the
+ * server may already have executed it, and replaying a paid tool could
+ * charge twice — unless the caller supplies an idempotency key, which
+ * is sent as an Idempotency-Key header and makes the retry safe.
+ * A call the server already answered is never replayed.
+ *
+ * Endpoints (S2-F2/F3): the canonical path is /api/mcp. A custom
+ * endpoint must be https on a known host unless localTest is set;
+ * a trailing /mcp path is normalized to /api/mcp.
  */
 
 export const MCP_SDK_VERSION = "0.3.1";
 export const MCP_ENDPOINT = "https://www.slidphilabs.com/api/mcp";
 export const DEFAULT_TIMEOUT_MS = 30000;
+export const MCP_CANONICAL_PATH = "/api/mcp";
+export const MCP_ALLOWED_HOSTS = ["www.slidphilabs.com", "slidphilabs.com"];
+export const MAX_ARGS_JSON_BYTES = 1048576;
+
+/**
+ * Validate a custom endpoint. Without localTest, only https URLs on a
+ * known host are accepted. A /mcp path is normalized to /api/mcp so both
+ * documented spellings reach the canonical route.
+ */
+export function validateEndpoint(raw, { localTest = false } = {}) {
+  if (typeof raw !== "string" || !raw) return { ok: false, reason: "bad_endpoint" };
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: "bad_endpoint" };
+  }
+  if (!localTest) {
+    if (url.protocol !== "https:") return { ok: false, reason: "insecure_endpoint" };
+    if (!MCP_ALLOWED_HOSTS.includes(url.hostname.toLowerCase())) {
+      return { ok: false, reason: "endpoint_host_mismatch" };
+    }
+  }
+  let endpoint = raw;
+  if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
+    url.pathname = MCP_CANONICAL_PATH;
+    endpoint = url.toString();
+  }
+  return { ok: true, endpoint };
+}
 
 function text(v) {
   return v == null ? "" : String(v);
@@ -28,7 +65,10 @@ function text(v) {
  * spl1.* claim token for paid seats (omit it for free tools); fetchFn
  * defaults to the global fetch and is stubbed in tests. timeoutMs caps
  * one attempt (0 disables, default 30s); maxRetries replays only
- * no-response transport faults (default 0, fail fast).
+ * no-response transport faults (default 0, fail fast). localTest lifts
+ * the https/known-host endpoint check for local development.
+ * idempotencyKey, when set, is sent on POSTs and allows a timed-out
+ * POST to be retried safely (single-call commands only).
  */
 export function createMcpClient(opts = {}) {
   const endpoint =
@@ -46,20 +86,33 @@ export function createMcpClient(opts = {}) {
       : DEFAULT_TIMEOUT_MS;
   const maxRetries =
     Number.isInteger(opts.maxRetries) && opts.maxRetries > 0 ? opts.maxRetries : 0;
+  const localTest = opts.localTest === true;
+  const clientKey =
+    typeof opts.idempotencyKey === "string" && opts.idempotencyKey
+      ? opts.idempotencyKey
+      : null;
+  const checked = validateEndpoint(endpoint, { localTest });
+  const endpointError = checked.ok ? null : checked.reason;
+  const finalEndpoint = checked.ok ? checked.endpoint : endpoint;
 
-  async function once({ method = "GET", body } = {}) {
+  async function once({ method = "GET", body, bodyText, idempotencyKey } = {}) {
     if (!fetchFn) return { ok: false, reason: "no_fetch", retryable: true };
     const init = {
       method,
       headers: {
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(body === undefined && bodyText === undefined ? {} : { "content-type": "application/json" }),
         ...(apiKey ? { authorization: "Bearer " + apiKey } : {}),
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(bodyText !== undefined
+        ? { body: bodyText }
+        : body === undefined
+          ? {}
+          : { body: JSON.stringify(body) }),
     };
     let res;
     try {
-      const pending = fetchFn(endpoint, init);
+      const pending = fetchFn(finalEndpoint, init);
       // Swallow late rejections so a won timeout race never surfaces
       // as an unhandled rejection after we have already refused.
       if (pending && typeof pending.then === "function") pending.then(() => {}, () => {});
@@ -93,12 +146,13 @@ export function createMcpClient(opts = {}) {
     return { ok: true, res, data };
   }
 
-  async function send(args) {
+  async function send(args, { allowTimeoutRetry = true } = {}) {
     let attempts = 0;
     for (;;) {
       attempts += 1;
       const out = await once(args);
-      if (!out.retryable || attempts > maxRetries) {
+      const mayRetry = out.reason === "network_failed" || (out.reason === "timed_out" && allowTimeoutRetry);
+      if (!out.retryable || !mayRetry || attempts > maxRetries) {
         const { retryable, ...rest } = out;
         return attempts > 1 ? { ...rest, attempts } : rest;
       }
@@ -106,10 +160,12 @@ export function createMcpClient(opts = {}) {
   }
 
   return {
-    endpoint,
+    endpoint: finalEndpoint,
+    endpointError,
 
     /** Read the server card (GET). */
     async card() {
+      if (endpointError) return { ok: false, reason: endpointError };
       const out = await send();
       if (!out.ok) return out;
       if (!out.res.ok || !out.data || typeof out.data !== "object") {
@@ -118,17 +174,43 @@ export function createMcpClient(opts = {}) {
       return { ok: true, card: out.data };
     },
 
-    /** Call one MCP tool by name. 402 answers come back as payment_required. */
-    async callTool(name, args = {}) {
+    /**
+     * Call one MCP tool by name. 402 answers come back as payment_required.
+     * callOpts: idempotencyKey (safe retry of a timed-out POST),
+     * maxArgsBytes (override for the argument size cap).
+     */
+    async callTool(name, args = {}, callOpts = {}) {
+      if (endpointError) return { ok: false, reason: endpointError };
       const tool = text(name).trim();
       if (!tool) return { ok: false, reason: "bad_tool" };
       if (args !== undefined && (typeof args !== "object" || args === null || Array.isArray(args))) {
         return { ok: false, reason: "bad_args" };
       }
-      const out = await send({
-        method: "POST",
-        body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args || {} } },
+      const key =
+        typeof callOpts.idempotencyKey === "string" && callOpts.idempotencyKey
+          ? callOpts.idempotencyKey
+          : clientKey;
+      const cap =
+        Number.isInteger(callOpts.maxArgsBytes) && callOpts.maxArgsBytes > 0
+          ? callOpts.maxArgsBytes
+          : MAX_ARGS_JSON_BYTES;
+      const bodyText = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: tool, arguments: args || {} },
       });
+      if (bodyText.length > cap) {
+        return { ok: false, reason: "args_too_large", bytes: bodyText.length, maxBytes: cap };
+      }
+      const out = await send(
+        {
+          method: "POST",
+          bodyText,
+          idempotencyKey: key,
+        },
+        { allowTimeoutRetry: !!key }
+      );
       if (!out.ok) return out;
       if (out.res.status === 402) {
         return {
