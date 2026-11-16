@@ -14,8 +14,10 @@
  *   spl-acn demo                        # offline walkthrough, no key
  *   spl-acn ask "..."                   # plain English (smart layer)
  *
- * Flags: --endpoint URL, --api-key KEY, --timeout MS, --retries N, --json
- * (or SPL_ACN_ENDPOINT / SPL_ACN_KEY / SPL_ACN_TIMEOUT / SPL_ACN_RETRIES).
+ * Flags: --endpoint URL, --api-key KEY, --timeout MS, --retries N, --json,
+ * --local-test, --idempotency-key KEY
+ * (or SPL_ACN_ENDPOINT / SPL_ACN_KEY / SPL_ACN_TIMEOUT / SPL_ACN_RETRIES /
+ * SPL_ACN_LOCAL_TEST=1 / SPL_ACN_IDEMPOTENCY_KEY).
  * A JSON config file (~/.spl-acn.json or SPL_ACN_CONFIG) supplies the same
  * defaults; precedence is flags, then env, then config. The CLI never
  * writes secrets — put the key in the file yourself, chmod 600.
@@ -53,8 +55,8 @@ export function usage() {
     "  spl-acn demo                    # offline walkthrough, no network",
     '  spl-acn ask "..."               # plain English, e.g. ask "how much is chamber"',
     "",
-    "Flags: --endpoint URL --api-key KEY --timeout MS --retries N --json",
-    "Env: SPL_ACN_ENDPOINT, SPL_ACN_KEY, SPL_ACN_TIMEOUT, SPL_ACN_RETRIES, SPL_ACN_CONFIG.",
+    "Flags: --endpoint URL --api-key KEY --timeout MS --retries N --local-test --idempotency-key KEY --json",
+    "Env: SPL_ACN_ENDPOINT, SPL_ACN_KEY, SPL_ACN_TIMEOUT, SPL_ACN_RETRIES, SPL_ACN_LOCAL_TEST, SPL_ACN_IDEMPOTENCY_KEY, SPL_ACN_CONFIG.",
     "Paid tools answer payment_required with accepts — pay, then retry.",
   ].join("\n");
 }
@@ -87,7 +89,7 @@ function parseArgs(argv) {
   const args = argv.slice();
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
-    if (a === "--endpoint" || a === "--api-key" || a === "--timeout" || a === "--retries") {
+    if (a === "--endpoint" || a === "--api-key" || a === "--timeout" || a === "--retries" || a === "--idempotency-key") {
       const v = args[(i += 1)];
       if (v == null || (typeof v === "string" && v.startsWith("--"))) {
         return { error: "missing value: " + a };
@@ -95,6 +97,8 @@ function parseArgs(argv) {
       flags[a.slice(2)] = v;
     } else if (a === "--json") {
       flags.json = true;
+    } else if (a === "--local-test") {
+      flags["local-test"] = true;
     } else if (a === "--help" || a === "-h") {
       flags.help = true;
     } else if (typeof a === "string" && a.startsWith("--")) {
@@ -151,11 +155,17 @@ export async function run(argv = [], opts = {}) {
     num(flags.timeout) ?? num(env.SPL_ACN_TIMEOUT) ?? num(cfg.timeoutMs) ?? num(cfg.timeout);
   const maxRetries =
     num(flags.retries) ?? num(env.SPL_ACN_RETRIES) ?? num(cfg.maxRetries) ?? num(cfg.retries);
+  const localTest =
+    flags["local-test"] === true || env.SPL_ACN_LOCAL_TEST === "1" || env.SPL_ACN_LOCAL_TEST === "true" || cfg.localTest === true;
+  const idempotencyKey =
+    flags["idempotency-key"] || env.SPL_ACN_IDEMPOTENCY_KEY || cfg.idempotencyKey || null;
   const client = createMcpClient({
     ...(flags.endpoint || env.SPL_ACN_ENDPOINT || cfg.endpoint ? { endpoint: flags.endpoint || env.SPL_ACN_ENDPOINT || cfg.endpoint } : {}),
     ...(flags["api-key"] || env.SPL_ACN_KEY || cfg.apiKey || cfg.key ? { apiKey: flags["api-key"] || env.SPL_ACN_KEY || cfg.apiKey || cfg.key } : {}),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(maxRetries === undefined ? {} : { maxRetries }),
+    ...(localTest ? { localTest: true } : {}),
+    ...(typeof idempotencyKey === "string" && idempotencyKey ? { idempotencyKey } : {}),
     ...(opts && typeof opts.fetchFn === "function" ? { fetchFn: opts.fetchFn } : {}),
   });
   const jsonOnly = !!flags.json;
@@ -250,6 +260,9 @@ export async function run(argv = [], opts = {}) {
     } catch {
       return { code: 2, error: "cannot read plan file: " + rest[0] };
     }
+    if (idempotencyKey) {
+      return { code: 2, error: "batch refuses a shared --idempotency-key: one key means one operation, and a batch runs many" };
+    }
     const steps = Array.isArray(plan) ? plan : plan.steps;
     if (!Array.isArray(steps) || steps.length === 0) {
       return { code: 2, error: "plan needs a non-empty steps array" };
@@ -275,6 +288,9 @@ export async function run(argv = [], opts = {}) {
       text: `Batch clean: ${results.length}/${steps.length} steps ran.`,
       json: { ok: true, completed: results.length, total: steps.length, results },
     }, jsonOnly);
+  }
+  if (cmd === "ask" && idempotencyKey) {
+    return { code: 2, error: "ask refuses a shared --idempotency-key: it may place several calls" };
   }
   if (cmd === "ask") return runAsk(client, rest, jsonOnly);
   const [tool, rawArgs] = rest;
